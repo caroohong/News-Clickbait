@@ -11,8 +11,6 @@ CAMBIOS RESPECTO A v1:
 
 INSTALACIÓN (ejecutar una vez en Colab):
   !pip install requests feedparser beautifulsoup4 lxml datasets pandas tqdm
-
-========================================================================
 """
 import time, random, logging, re, os
 from datetime import datetime
@@ -204,7 +202,6 @@ NATIONAL_CLICKBAIT_QUERIES = [
     'Chile descuento oferta ahorro truco',
     'Chile receta truco secreto increíble',
 ]
-
 # INTERNACIONALES INFORMATIVOS
 INTERNATIONAL_INFORMATIVE_QUERIES = [
     'site:bbc.com/mundo',
