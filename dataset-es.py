@@ -49,23 +49,38 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 TARGET_PER_CLASS = 1100   # objetivo ligeramente mayor para compensar duplicados
 
-#  HEURÍSTICO DE CLICKBAIT
+#  HEURÍSTICO DE CLICKBAIT (Refinado para reducir falsos positivos y captar brechas estructurales)
 CLICKBAIT_PATTERNS = [
-    r"\bno (te|vas a|podrás)\b.*\bcreer\b",
-    r"\b(sorprende(rá|rás|nte)|impresionante|increíble|brutal|viral|impactante)\b",
-    r"\besto es lo que\b",
-    r"\bnadie (te|lo|les) (dijo|contó|esperaba)\b",
-    r"\b(te|tus|tu)\b.{0,20}\b(debes|tienes que|necesitas)\b",
-    r"\blo que (necesitas|debes|tienes que) saber\b",
-    r"\b\d+\s+(razones|cosas|formas|tips|secretos|trucos|fotos|imágenes)\b",
-    r"\?$",
-    r"\b¿(sabías|sabes|conoces|adivinas)\b",
-    r"\b(el mejor|el peor|el más|la más|jamás|nunca antes|histórico)\b",
-    r"\b(reaccionó|respondió|explotó|lloró|confesó|reveló|admitió)\b",
-    r"\b(así|de esta manera|de este modo)\b.{0,30}\b(sorprend|impresion|viral)\b",
-    r"!\s*$",
+    # 1. Brecha de Curiosidad (Curiosity Gap) - Ocultar el sujeto o el resultado
+    r"^(Este|Esta|Esto|Estos|Estas)\s+(es\s+l[ao]s?|son\s+l[ao]s?)\b", # Este es el..., Esta es la...
+    r"^(Este|Esta|Esto|Estos|Estas)\s+\w+.*\bque\b",                 # Esta innovación que..., Esta fruta que te...
+    r"^(El|La|Lo|Los|Las)\s+.*\s+que\s+(no\s+sabías|debes\s+conocer|sorprende|te\s+cambiará)\b",
+    r"\b(es lo que|es la|es el)\b",
+    r"\b(lo que (pasó|ocurrió|sucedi|dejó))\b",
     r"\b(mira|descubre|entérate|conoce)\s+(cómo|qué|quién|cuándo|dónde)\b",
-    r"\b(esto|lo que|lo que pasó|lo ocurrido)\b.{0,20}\b(dejó|dejará)\b",
+    r"\b(así|de esta manera)\b.*\b(quedó|reaccionó|luce|está)\b",
+    r"^Por qué\b", # Por qué Chile tiene que...
+
+    # 2. Sensacionalismo Vacío (Empty Sensationalism)
+    r"\b(sorprende(rá|rás|nte)|impresionante|increíble|brutal|viral|impactante|insólito)\b",
+    r"\b(no (te|vas a|podrás)\b.*\bcreer)\b",
+    r"\b(quedarás (en shock|helado|sorprendido))\b",
+    r"\b(el video que|la foto que)\b",
+
+    # 3. Listicles (Estructura de lista con promesa de valor)
+    r"^\d+\s+(razones|cosas|formas|tips|secretos|trucos|fotos|imágenes|pasos|claves)\b",
+
+    # 4. Preguntas Retóricas o de Enganche
+    r"¿\s*(sabías|sabes|conoces|adivinas|te imaginas|buscas|quieres)\b",
+    r"¿\s*(quién|qué|cuál|cómo)\s+(es|será|pasará)\s*\?$",
+
+    # 5. Personalización Forzada (Forced Personalization)
+    r"\b(tú|te|tus|tu)\b.{0,20}\b(debes|tienes que|necesitas|podrás)\b",
+    r"\b(nadie (te|lo|les) (dijo|contó|esperaba))\b",
+
+    # 6. Reacciones Exageradas (Exaggerated Reactions)
+    r"\b(reaccionó|explotó|lloró|confesó|reveló|admitió|se sinceró)\b",
+    r"\b(estallan las redes|en llamas|causa furor)\b",
 ]
 CLICKBAIT_RE = [re.compile(p, re.IGNORECASE) for p in CLICKBAIT_PATTERNS]
 
@@ -73,7 +88,8 @@ def clickbait_score(title: str) -> float:
     if not title:
         return 0.0
     hits = sum(1 for p in CLICKBAIT_RE if p.search(title))
-    return round(min(hits / 4.0, 1.0), 3)
+    # Umbral más sensible: con 2 hits ya es sospechoso (0.66), con 3 es seguro (1.0)
+    return round(min(hits / 3.0, 1.0), 3)
 
 #  ESTRATEGIA: GOOGLE NEWS RSS
 #  Google News actúa como proxy: devuelve titulares de cualquier
@@ -141,7 +157,6 @@ def extract_date_from_html(url: str) -> str:
     except Exception:
         pass
     return ""
-
 
 def gnews_topic_url(topic: str) -> str:
     """URLs de secciones temáticas de Google News (mayor volumen)."""
@@ -483,6 +498,76 @@ def load_fakenews(target: int = TARGET_PER_CLASS) -> list[dict]:
     log.info(f"[FakeNews] TOTAL: {len(records)} (español únicamente)")
     return records[:target]
 
+# ==============================================================================
+# RÚBRICA DE ETIQUETADO — CRITERIOS DE VERDAD DE TERRENO
+# ==============================================================================
+# CLICKBAIT se etiqueta si:
+#   1. Brecha de Curiosidad: Oculta deliberadamente el sujeto o el desenlace.
+#   2. Lenguaje Emocional: Usa adjetivos extremos o promesas hiperbólicas.
+#   3. Apelación Directa: Usa el "tú" o imperativos para forzar la acción.
+#   4. Dependencia de Clic: El titular no se explica por sí solo.
+#
+# INFORMATIVO se etiqueta si:
+#   1. Autocontenido: Entrega el hecho principal (Actor + Acción + Contexto).
+#   2. Tono Neutro: Evita juicios de valor o lenguaje sensacionalista.
+#   3. Especificidad: Incluye datos, nombres o lugares concretos.
+# ==============================================================================
+
+def apply_labeling_rubric(row: pd.Series) -> str:
+    """
+    Decide la etiqueta final basada en la rúbrica lingüística.
+    Prioriza el contenido detectado (cb_heuristic) sobre la fuente (etiqueta_base).
+    """
+    title = str(row["titulo"]).lower()
+    score = row["cb_heuristic"]
+    base  = row["etiqueta_base"]
+
+    if base == "fake_news":
+        return "fake_news"
+
+    # RESCATE DE NOTICIAS DE SERVICIO O CRÍTICAS (Hard News / Service News)
+    # Palabras que suelen indicar contenido informativo serio aunque usen lenguaje llamativo
+    hard_news_signals = [
+        "fallece", "muere", "tragedia", "accidente", "homicidio", "detenido", "carabineros",
+        "gobierno", "fiscalía", "presupuesto", "inflación", "censos", "clases", "escolar",
+        "bono", "subsidio", "beneficio", "pago", "calendario", "postular", "requisitos",
+        "oficial", "confirmado", "sentencia", "tribunal", "decreto", "ley", "clásico",
+        "tiroteo", "amenaza", "robo", "delincuencia", "policía", "colegio", "universidad",
+        "estudiante", "fallecido", "muertos", "heridos", "incendio", "sismo", "terremoto",
+        "triunfo", "derrota", "partido", "gol", "fútbol", "tenis", "atletismo"
+    ]
+    # Frases de servicio directo
+    service_phrases = ["cómo postular", "cómo obtener", "cuándo pagan", "fecha de pago", "dónde ver", "revisa el"]
+    
+    is_hard_or_service = any(word in title for word in hard_news_signals) or \
+                         any(phrase in title for phrase in service_phrases)
+
+    # Regla de rescate inmediata para noticias de servicio/tragedias con score bajo/medio
+    if is_hard_or_service and score <= 0.4:
+        return "informativo"
+
+    # REGLA 1: Si el contenido es puramente informativo (score 0), 
+    # lo movemos a informativo sin importar de qué query venga.
+    if score == 0:
+        return "informativo"
+
+    # REGLA 2: Si tiene fuerte evidencia lingüística de clickbait (score >= 0.6)
+    # lo movemos a clickbait sin importar el portal.
+    if score >= 0.6:
+        return "clickbait"
+
+    # REGLA 3: Zona de conflicto (Portal dice una cosa, Heurístico otra)
+    # Si viene de portal serio pero tiene algo de clickbait, o viceversa.
+    if base == "informativo" and score > 0.3:
+        if is_hard_or_service: return "informativo"
+        return "posible_clickbait"  # Para revisión manual o descarte
+    
+    if base == "clickbait" and score < 0.3:
+        if is_hard_or_service: return "informativo"
+        return "posible_informativo" # Contenido neutro en portal popular
+
+    return base
+
 #  ORQUESTADOR PRINCIPAL
 def run_scraping(target: int = TARGET_PER_CLASS, include_fake_news: bool = True) -> pd.DataFrame:
     all_records: list[dict] = []
@@ -516,13 +601,13 @@ def run_scraping(target: int = TARGET_PER_CLASS, include_fake_news: bool = True)
     df = df.drop_duplicates(subset=["titulo"]).reset_index(drop=True)
     df = df[df["titulo"].str.len() >= 15].reset_index(drop=True)
 
-    # Refinamiento heurístico: informativo con alto score → revisión
-    mask = (df["cb_heuristic"] >= 0.5) & (df["etiqueta_base"] == "informativo")
-    df.loc[mask, "etiqueta_final"] = "posible_clickbait"
+    # APLICAR RÚBRICA DE ETIQUETADO
+    log.info("Aplicando rúbrica de etiquetado lingüístico...")
+    df["etiqueta_final"] = df.apply(apply_labeling_rubric, axis=1)
 
     # Resumen
     log.info(f"TOTAL titulares únicos: {len(df):,}")
-    log.info("\n" + df["etiqueta_final"].value_counts().to_string())
+    log.info("\nDistribución tras aplicar rúbrica:\n" + df["etiqueta_final"].value_counts().to_string())
     log.info(f"Nacionales     : {(df['origen']=='nacional').sum():,}")
     log.info(f"Internacionales: {(df['origen']=='internacional').sum():,}")
     print("="*65)
@@ -532,9 +617,12 @@ def save_dataset(df: pd.DataFrame) -> pd.DataFrame:
     df.to_csv(RAW_CSV, index=False, encoding="utf-8-sig")
     log.info(f"Dataset raw → {RAW_CSV}")
 
-    df_final = df[df["etiqueta_final"] != "posible_clickbait"].copy()
+    # Para el dataset final, solo nos quedamos con las clases limpias
+    clean_classes = ["informativo", "clickbait", "fake_news"]
+    df_final = df[df["etiqueta_final"].isin(clean_classes)].copy()
+    
     df_final.to_csv(FINAL_CSV, index=False, encoding="utf-8-sig")
-    log.info(f"Dataset final → {FINAL_CSV}")
+    log.info(f"Dataset final (limpio por rúbrica) → {FINAL_CSV}")
     log.info("\n" + df_final["etiqueta_final"].value_counts().to_string())
     return df_final
 

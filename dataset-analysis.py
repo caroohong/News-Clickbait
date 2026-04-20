@@ -357,7 +357,7 @@ def analisis_4_evolucion_temporal(df: pd.DataFrame, out: str):
     x_max = monthly["mes_dt"].max() + pd.Timedelta(days=15)
     ax1.set_xlim(x_min, x_max)
 
-    ax1.set_xlabel("Mes", labelpad=10)
+    ax1.set_xlabel("Año", labelpad=10)
     ax1.set_title("Evolución mensual del clickbait en el tiempo", pad=12)
 
     lines1, labels1 = ax1.get_legend_handles_labels()
