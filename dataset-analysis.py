@@ -289,6 +289,9 @@ def analisis_4_evolucion_temporal(df: pd.DataFrame, out: str):
     Evolución mensual del % de clickbait sobre el total de artículos con fecha.
     """
     df_fecha = df.dropna(subset=["fecha_dt"]).copy()
+    
+    # Filtrar fechas anteriores a 2012 (basado en auditoría de datos)
+    df_fecha = df_fecha[df_fecha["fecha_dt"].dt.year >= 2012]
 
     if len(df_fecha) < 30:
         print("  [!] Análisis 4 omitido: menos de 30 titulares con fecha válida.")

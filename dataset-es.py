@@ -610,7 +610,6 @@ def run_scraping(target: int = TARGET_PER_CLASS, include_fake_news: bool = True)
     log.info("\nDistribución tras aplicar rúbrica:\n" + df["etiqueta_final"].value_counts().to_string())
     log.info(f"Nacionales     : {(df['origen']=='nacional').sum():,}")
     log.info(f"Internacionales: {(df['origen']=='internacional').sum():,}")
-    print("="*65)
     return df
 
 def save_dataset(df: pd.DataFrame) -> pd.DataFrame:
