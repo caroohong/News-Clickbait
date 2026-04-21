@@ -2,8 +2,6 @@
 ========================================================================
 TAREA 2 - NLP & XAI: Detección de Clickbait en Prensa Chilena
 Módulo de Obtención del Dataset — v3
-
-CAMBIOS RESPECTO A v2:
   - Sistema heurístico expandido a 4 ejes teóricos de clickbait:
       1. Brecha de información / Retención estratégica
       2. Exageración / Hipérbole
@@ -13,16 +11,13 @@ CAMBIOS RESPECTO A v2:
   - Función explain_score() para auditar por qué un titular fue marcado
   - Rúbrica de etiquetado v2: incorpora los 4 ejes + señales hard news
   - Nuevo test unitario integrado (--test) para validar los patrones
-
 INSTALACIÓN:
   pip install requests feedparser beautifulsoup4 lxml datasets pandas tqdm
 ========================================================================
 """
-
 import time, random, logging, re, os, argparse
 from dataclasses import dataclass, field
 from typing import Optional
-
 import requests
 import feedparser
 import pandas as pd
@@ -48,8 +43,8 @@ REQUEST_DELAY    = (1.5, 3.0)
 MAX_RETRIES      = 3
 TIMEOUT          = 20
 OUTPUT_DIR       = "dataset_output"
-RAW_CSV          = os.path.join(OUTPUT_DIR, "dataset_raw_v3.csv")
-FINAL_CSV        = os.path.join(OUTPUT_DIR, "dataset_etiquetado_v3.csv")
+RAW_CSV          = os.path.join(OUTPUT_DIR, "dataset_raw_v4.csv")
+FINAL_CSV        = os.path.join(OUTPUT_DIR, "dataset_etiquetado_v4.csv")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 TARGET_PER_CLASS = 1100
@@ -164,10 +159,12 @@ EJE1_BRECHA = [
     (r"\b(y lo que (pasó|ocurrió|dijo|hizo) (después|luego))\b",
      "Cliffhanger mid-sentence"),
 
+    # "por un importante/sorprendente/inesperado motivo" — retención estratégica
+    (r"\bpor (un|este|su|el)\s+(importante|sorprendente|inesperado|particular|especial|curioso|polémico|misterioso)\s+motivo\b",
+     "Retención del motivo/causa con adjetivo hiperbólico"),
     # "Quién es [Sujeto]" sin signos de interrogación (retiene biografía)
-    (r"^(quién|qué)\s+es\b(?!.*[\?,])",
-     "Quién/Qué es [Sujeto] sin respuesta concreta"),
-
+        (r"^(quién|qué)\s+es\b(?!.*[\?,])",
+         "Quién/Qué es [Sujeto] sin respuesta concreta"),
     # Metáfora de atención (se robará miradas)
     (r"\b(se (robará|robó|llevará|llevó)|robó)\s+las\s+miradas\b",
      "Metáfora de atracción de atención"),
@@ -234,12 +231,20 @@ EJE3_EMOCION = [
     (r"\b(confesó|reveló|admitió|se sinceró|se abrió|habló por primera vez|revela el motivo oculto)\b",
      "Confesión o revelación íntima"),
 
+    # Cambio físico/look como gancho de farándula
+    (r"\b(radical cambio|drástico cambio|nuevo look|cambio de look|cambio físico)\b",
+     "Cambio físico/look como gancho de farándula"),
+
+    # "Antes y después" formato clickbait clásico de transformación visual
+    (r"\bantes y después\b",
+     "Formato antes/después como gancho visual"),
+
     # Apelación al miedo cotidiano — detecta en cualquier orden gramatical
     (r"\b(peligro(so)?|tóxico|mortal|letal|cancerígeno|dañino|venenoso|nocivo)\b.{0,60}\b(que (consumes|usas|tienes|haces|comes|bebes|tocas|respiras))\b",
      "Apelación al miedo cotidiano — adjetivo precede al nexo"),
     (r"\b(que (consumes|usas|tienes|haces|comes|bebes|tocas|respiras))\b.{0,60}\b(peligro(so)?|tóxico|mortal|letal|cancerígeno|dañino|venenoso|nocivo)\b",
      "Apelación al miedo cotidiano — nexo precede al adjetivo"),
-    #Ssin nexo relativo explícito — "todos los días es mortal"
+    # Sin nexo relativo explícito — "todos los días es mortal"
     (r"\b(todos los días|cada día|a diario|habitualmente|normalmente)\b.{0,40}\b(peligro(so)?|tóxico|mortal|letal|cancerígeno|dañino|nocivo)\b",
      "Apelación al miedo cotidiano — hábito diario es peligroso"),
     (r"\b(peligro(so)?|tóxico|mortal|letal|cancerígeno|dañino|nocivo)\b.{0,40}\b(todos los días|cada día|a diario|sin saberlo|sin que lo sepas)\b",
@@ -308,9 +313,9 @@ EJE4_AMBIGUEDAD = [
     (r"\b(nadie (lo )?sabe (pero|que)|pocas personas saben|solo el \d+%)\b",
      "Conocimiento exclusivo/secreto"),
 
-    # Elipsis deliberada al final del titular  "..."
-    (r"\.\.\.\s*$",
-     "Elipsis de suspenso al final"),
+    # Elipsis deliberada en cualquier parte del titular para crear suspenso
+    (r"\w\s*\.\.\.\s*(\w|$)",
+     "Elipsis de suspenso (retención narrativa)"),
 
     # "Lo que realmente pasó con X"
     (r"\b(lo que realmente (pasó|ocurrió|sucedió|hay detrás|significa))\b",
@@ -325,12 +330,12 @@ EJE4_AMBIGUEDAD = [
      "Imperativo visual sin resolución"),
 ]
 
-#  MOTOR DE PUNTUACIÓN
 def _score_axis(title: str, patterns: list[tuple]) -> tuple[float, list[str]]:
     """
     Evalúa un eje de clickbait sobre el titular.
     Retorna (score_normalizado, lista_de_descripciones_activadas).
-    El score por eje se normaliza: 1 hit = 0.5, 2+ hits = 1.0 para evitar doble penalización por patrones semánticamente similares.
+    El score por eje se normaliza: 1 hit = 0.5, 2+ hits = 1.0
+    para evitar doble penalización por patrones semánticamente similares.
     """
     hits = []
     for regex, description in patterns:
@@ -412,8 +417,7 @@ HARD_NEWS_WORDS = {
     # Emergencias naturales
     "sismo", "terremoto", "tsunami", "incendio", "alerta", "evacuación",
     "volcán", "tormenta", "inundación", "emergencia", "desastre", "temblor",
-    # Deportes — RESULTADOS CONCRETOS (score, marcador, clasificación)
-    # Solo palabras que implican un resultado verificable, no lenguaje hiperbólico
+    # Deportes (score, marcador, clasificación)
     "triunfo", "derrota", "empate", "clasificó", "eliminó", "campeonato",
     "torneo", "copa", "mundial", "olimpiadas", "ascenso", "descenso",
     "medalla", "oro", "plata", "bronce", "podio", "récord",
@@ -438,7 +442,6 @@ HARD_NEWS_PHRASES = [
     "dónde ver", "revisa el", "quiénes pueden", "cuáles son los requisitos",
     "así funciona", "qué es el", "qué es la",
     # Preguntas educativas/explicativas — Eje1 activa pero son periodismo serio
-    # Patrón: ¿Por qué X [tiene/es/hace]? con tema geopolítico, científico o institucional
     "por qué argentina", "por qué chile", "por qué españa", "por qué eeuu",
     "por qué el golfo", "por qué la ue", "por qué la onu", "por qué europa",
     "por qué brasil", "por qué méxico", "por qué colombia",
@@ -453,6 +456,16 @@ HARD_NEWS_PHRASES = [
     # Preguntas electorales y políticas explicativas
     "qué pasa si gana", "qué pasa si pierde", "qué pasa si empata",
     "qué significa", "qué implica", "qué cambia",
+    # Preguntas de política pública con dato cuantitativo → informativo
+    "cuánto bajarían", "cuánto costaría", "cuánto subiría", "cuánto bajaría",
+    "cómo se pagará", "cómo se entregará", "cómo se realizará",
+    "cómo será la rebaja", "cómo será el cambio",
+    # Análisis geopolítico/institucional/deportivo serio con sujetos concretos
+    "por qué barcelona", "por qué real madrid", "por qué boca", "por qué river",
+    "por qué el accidente", "por qué la violenta", "por qué la entrada",
+    # Programación de eventos concretos
+    "cuándo vuelve a jugar", "cuándo regresa", "cómo será la inauguración",
+    "cómo será la ceremonia", "cómo será el evento",
 ]
 
 def is_hard_news(title: str) -> bool:
@@ -463,7 +476,7 @@ def is_hard_news(title: str) -> bool:
         any(ph in t_lower for ph in HARD_NEWS_PHRASES)
     )
 
-# ── Contexto deportivo concreto ──────────────────────────────────────
+# Contexto deportivo concreto
 # "Increíble gol de Alexis Sánchez ante Perú" es periodismo deportivo,
 # no clickbait: tiene sujeto nombrado + acción + contexto.
 # En contraste, "Increíble lo que hizo este jugador" SÍ es clickbait.
@@ -565,6 +578,15 @@ def apply_labeling_rubric(row: pd.Series) -> str:
         return "informativo"
 
     # R1b: Deporte concreto con adjetivo hiperbólico
+    # "Increíble gol de X ante Y" = periodismo deportivo, no clickbait
+    # CONDICIÓN: brecha==0 (no hay retención de información) Y
+    #            NO hay superlativo histórico ("de la historia", "de todos los tiempos")
+    #            porque esos sí son clickbait aunque tengan nombre propio
+    _superlativo_hist_re = re.compile(
+        r'\b(de (la|el|los|las) historia|de todos los tiempos|jamás (visto|hecho|marcado|convertido))\b',
+        re.IGNORECASE
+    )
+    is_superlativo_historico = bool(_superlativo_hist_re.search(title))
     if sport_ok and total_score < 0.45 and result.brecha == 0 and not is_superlativo_historico:
         return "informativo"
 
@@ -576,7 +598,8 @@ def apply_labeling_rubric(row: pd.Series) -> str:
     if max_eje >= 0.85:
         dominant = result.dominant_axis()
         if hard and dominant in ("exageracion", "emocion"):
-            if result.brecha > 0.3 or result.ambiguedad > 0.3:
+            # Pero si además tiene brecha o ambigüedad, igual es CB
+            if result.brecha > 0 or result.ambiguedad > 0:
                 return "clickbait"
             return "informativo"
         return "clickbait"
@@ -584,8 +607,11 @@ def apply_labeling_rubric(row: pd.Series) -> str:
     # R3b: "Quién es X" / "Qué es X" sin dato en el titular
     quien_re = re.compile(r'^(quién es|qué es)\s+\w', re.IGNORECASE)
     if quien_re.match(title):
-        is_vague = bool(re.search(r'\bque\b.*\b(encantó|viral|sorprendió|impactó|enamoró)\b', t_lower))
-        has_concrete_data = any(w in t_lower for w in ["ministro", "actor", "director", "científico", "político", "médico"])
+        # Si tiene relative clause vaga "que encantó a", "que se volvió viral", es CB
+        is_vague = bool(re.search(r'\b(que|quien|la|el)\b.*\b(encantó|viral|sorprendió|impactó|influencer|tiktoker|youtuber|famoso)\b', t_lower))
+        # Si tiene coma + dato institucional es informativo
+        has_concrete_data = any(w in t_lower for w in ["ministro", "actor", "director", "científico", "político", "exaliado", "crítico"])
+        
         if is_vague and not has_concrete_data:
             return "clickbait"
         
@@ -593,20 +619,24 @@ def apply_labeling_rubric(row: pd.Series) -> str:
         if not has_apposition:
             return "clickbait"
 
-    # R3d: Casos Titanic/NASA/Misterios sin info concreta
-    if ("sorprendente" in t_lower or "insólito" in t_lower) and \
-       any(w in t_lower for w in ["tesoro", "hallazgo", "secreto", "misterio", "descubren"]):
+    # R3c: "Viral como tema central" con sujeto anónimo
+    # "Tiktoker se hace viral al..." = el clickbait ES la historia
+    # Distinguir de "X se hace viral" con nombre propio conocido
+    viral_tema_re = re.compile(
+        r'\b(tiktoker|youtuber|influencer|joven|hombre|mujer|niño|niña)\b'
+        r'.{0,40}'
+        r'\b(se (hizo|volvió|hace) viral|es viral)\b',
+        re.IGNORECASE
+    )
+    if viral_tema_re.search(title) and total_score > 0:
         return "clickbait"
 
     # R4: Hard news con score medio
-    if hard and total_score < 0.45 and result.brecha < 0.4:
+    if hard and total_score < 0.45:
         return "informativo"
 
     # R5: Sin señal
     if total_score == 0.0:
-        # Elipsis de suspenso aunque no tenga otras señales
-        if "..." in title:
-            return "clickbait"
         return "informativo"
 
     # R6: Zona gris — portal serio con señales leves
@@ -926,7 +956,7 @@ def run_scraping(target: int = TARGET_PER_CLASS, include_fake_news: bool = True)
     all_records += scrape_gnews_queries(INTERNATIONAL_CLICKBAIT_QUERIES, "clickbait", "internacional",
                                          target, lang="es-419", country="US")
     if include_fake_news:
-        print("\n── Fake News ──")
+        print("\n Fake News ")
         all_records += load_fakenews(target)
 
     df = pd.DataFrame(all_records)
@@ -958,7 +988,7 @@ def run_tests():
     """
     test_cases = [
         # (titular, etiqueta_esperada, descripcion)
-        # ── EJE 1: BRECHA ──────────────────────────────────────────
+        # EJE 1: BRECHA
         ("¿Por qué el Presidente decidió renunciar a este cargo inesperado?",
          "clickbait", "Eje1: pregunta sin respuesta + retención de causa"),
         ("Nadie esperaba lo que pasó después del partido de anoche",
@@ -966,7 +996,7 @@ def run_tests():
         ("Descubre cómo este vegetal puede salvar tu vida",
          "clickbait", "Eje1: imperativo + interrogativo indirecto"),
 
-        # ── EJE 2: EXAGERACIÓN ─────────────────────────────────────
+        # EJE 2: EXAGERACIÓN
         ("El gol más increíble de la historia del fútbol chileno se marcó ayer",
          "clickbait", "Eje2: superlativo histórico"),
         ("La decisión de Apple que cambiará tu vida para siempre",
@@ -974,7 +1004,7 @@ def run_tests():
         ("¡Atención! Lo que debes saber antes de que sea tarde",
          "clickbait", "Eje2: urgencia artificial + alerta vacía"),
 
-        # ── EJE 3: EMOCIÓN ─────────────────────────────────────────
+        # EJE 3: EMOCIÓN
         ("La actriz lloró en vivo al recordar su pasado y dejó a todos sin palabras",
          "clickbait", "Eje3: reacción emocional + sorpresa colectiva"),
         ("Confesó todo: el futbolista habló por primera vez de su adicción",
@@ -982,7 +1012,7 @@ def run_tests():
         ("El alimento que consumes todos los días es mortal y no lo sabías",
          "clickbait", "Eje3: apelación al miedo cotidiano"),
 
-        # ── EJE 4: AMBIGÜEDAD ──────────────────────────────────────
+        # EJE 4: AMBIGÜEDAD
         ("Un famoso cantante sorprendió a todos con su radical cambio de imagen...",
          "clickbait", "Eje4: personaje sin identificar + elipsis"),
         ("La verdad real detrás del escándalo que sacudió al país",
@@ -990,7 +1020,7 @@ def run_tests():
         ("Así quedó la conversación entre los dos políticos",
          "clickbait", "Eje4: adverbio de modo sin acción completada"),
 
-        # ── HARD NEWS — NO deben ser clickbait ────────────────────
+        # HARD NEWS — NO deben ser clickbait
         ("Banco Central sube la tasa de interés al 5,5% en reunión de política monetaria",
          "informativo", "Hard news económica sin señales CB"),
         ("Carabineros detiene a imputado por homicidio en La Florida",
