@@ -1,34 +1,18 @@
 """
-========================================================================
 TAREA 2 - NLP & XAI: Detección de Clickbait en Prensa Chilena
-Módulo de Obtención del Dataset — v3
-
-CAMBIOS RESPECTO A v2:
-  - Sistema heurístico expandido a 4 ejes teóricos de clickbait:
-      1. Brecha de información / Retención estratégica
-      2. Exageración / Hipérbole
-      3. Apelación emocional
-      4. Ambigüedad deliberada
-  - Cada eje tiene peso propio → score ponderado más preciso
-  - Función explain_score() para auditar por qué un titular fue marcado
-  - Rúbrica de etiquetado v2: incorpora los 4 ejes + señales hard news
-  - Nuevo test unitario integrado (--test) para validar los patrones
-
-INSTALACIÓN:
   pip install requests feedparser beautifulsoup4 lxml datasets pandas tqdm
-========================================================================
 """
 
 import time, random, logging, re, os, argparse
 from dataclasses import dataclass, field
 from typing import Optional
-
 import requests
 import feedparser
 import pandas as pd
+import json
 from bs4 import BeautifulSoup
 from tqdm import tqdm
-
+from datasets import load_dataset
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -54,17 +38,14 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 TARGET_PER_CLASS = 1100
 
-#  SISTEMA HEURÍSTICO — 4 EJES TEÓRICOS
-#
+#  4 EJES TEÓRICOS
 #  Fundamentación académica:
 #    Eje 1 (Brecha): Loewenstein (1994) — Information Gap Theory
 #    Eje 2 (Exageración): Bazaco et al. (2019) — Clickbait como hipérbole
 #    Eje 3 (Emoción): Hamby et al. (2018) — Emotional Appeals in News
 #    Eje 4 (Ambigüedad): Blom & Hansen (2015) — Forward-reference as lure
-#
-#  Cada eje aporta hasta 1.0 punto. El score final es el promedio
-#  ponderado de los 4 ejes. Los pesos reflejan la relevancia empírica
-#  de cada dimensión para la clasificación de clickbait en español.
+#  Cada eje aporta hasta 1.0 punto. El score final es el promedio ponderado de los 4 ejes. Los pesos reflejan la
+#  relevancia empírica de cada dimensión para la clasificación de clickbait
 
 @dataclass
 class ClickbaitScore:
@@ -73,14 +54,14 @@ class ClickbaitScore:
     exageracion: float = 0.0   # Eje 2: hipérbole y sensacionalismo vacío
     emocion:     float = 0.0   # Eje 3: apelación emocional y reacciones
     ambiguedad:  float = 0.0   # Eje 4: vaguedad deliberada del referente
-    matches:     dict  = field(default_factory=dict)  # eje → patrones activados
+    matches:     dict  = field(default_factory=dict)
 
     @property
     def total(self) -> float:
         """
         Score ponderado final [0, 1].
         Pesos: Brecha=0.35, Exageración=0.25, Emoción=0.25, Ambigüedad=0.15
-        Refleja que la brecha informativa es el mecanismo más definitorio del CB.
+        Refleja que la brecha informativa es el mecanismo más definitorio del clickbait.
         """
         score = (
             self.brecha      * 0.35 +
@@ -118,9 +99,8 @@ class ClickbaitScore:
 
 
 # EJE 1: BRECHA DE INFORMACIÓN / RETENCIÓN ESTRATÉGICA
-# El titular promete información pero omite deliberadamente el dato
-# central, forzando al usuario a clicar para resolver la curiosidad.
-# Mecanismo: forward-reference, pronombres vagos, preguntas sin respuesta.
+# El titular promete información pero omite deliberadamente el dato central, forzando al usuario a clicar para resolver
+# la curiosidad. Mecanismo: forward-reference, pronombres vagos, preguntas sin respuesta.
 
 EJE1_BRECHA = [
     # Pronombre inicial que oculta el sujeto
@@ -174,10 +154,8 @@ EJE1_BRECHA = [
 ]
 
 # EJE 2: EXAGERACIÓN / HIPÉRBOLE
-# Uso de lenguaje superlativo, adjetivos extremos o afirmaciones
-# grandiosas que elevan artificialmente la percepción de importancia.
-# No necesariamente es falso, pero distorsiona la magnitud del hecho.
-
+# Uso de lenguaje superlativo, adjetivos extremos o afirmaciones grandiosas que elevan artificialmente la percepción
+# de importancia. No necesariamente es falso, pero distorsiona la magnitud del hecho.
 EJE2_EXAGERACION = [
     # Adjetivos extremos de impacto
     (r"\b(increíble|impresionante|impactante|brutal|épico|monumental|histórico|sin precedentes|sorprendente|insólito|extraordinario|asombroso|pánico|caos|urgente)\b",
@@ -220,11 +198,9 @@ EJE2_EXAGERACION = [
      "Etiqueta de contenido multimedia como gancho"),
 ]
 
-
 # EJE 3: APELACIÓN EMOCIONAL
-# Activación deliberada de emociones (miedo, ira, ternura, indignación,
-# admiración) para motivar el clic independientemente del valor informativo.
-# Incluye reacciones emocionales de terceros usadas como gancho.
+# Activación deliberada de emociones (miedo, ira, ternura, indignación, admiración) para motivar el clic
+# independientemente del valor informativo. Incluye reacciones emocionales de terceros usadas como gancho.
 EJE3_EMOCION = [
     # Verbos de reacción emocional intensa (de terceros)
     (r"\b(lloró|lloraron|se quebró|se emocionó|estalló|explotó|enloqueció|enloquecieron)\b",
@@ -279,10 +255,9 @@ EJE3_EMOCION = [
 ]
 
 # EJE 4: AMBIGÜEDAD DELIBERADA
-# El titular usa referencias vagas, pronombres indefinidos o estructuras
-# gramaticales incompletas para crear una sensación de misterio que
-# solo se resuelve haciendo clic. Diferente a la brecha informativa:
-# aquí la vaguedad es el mecanismo, no la omisión de datos concretos.
+# El titular usa referencias vagas, pronombres indefinidos o estructuras gramaticales incompletas para crear una
+# sensación de misterio que solo se resuelve haciendo clic. Diferente a la brecha informativa: la vaguedad es el
+# mecanismo, no la omisión de datos concretos.
 EJE4_AMBIGUEDAD = [
     # Pronombres vagos como sujeto principal
     (r"^(un|una|unos|unas)\s+(hombre|mujer|niño|niña|joven|anciano|sujeto|individuo|personaje)\b.{0,50}\b(y (lo que|lo que pasó|su reacción))\b",
@@ -373,15 +348,13 @@ def analyze_clickbait(title: str) -> ClickbaitScore:
     )
 
 def clickbait_score(title: str) -> float:
-    """Función de conveniencia: retorna solo el score total [0,1]."""
+    """retorna solo el score total [0,1]."""
     return analyze_clickbait(title).total
 
 def explain_score(title: str) -> str:
     """
-    Imprime la explicación completa del score de un titular.
-    Útil para auditoría y para la sección XAI del informe.
-
-    Ejemplo de uso:
+    Explicación completa del score de un titular.
+    Ejemplo:
         explain_score("El famoso chileno que nadie esperaba confesó todo")
     """
     result = analyze_clickbait(title)
@@ -437,7 +410,7 @@ HARD_NEWS_PHRASES = [
     "cómo postular", "cómo obtener", "cuándo pagan", "fecha de pago",
     "dónde ver", "revisa el", "quiénes pueden", "cuáles son los requisitos",
     "así funciona", "qué es el", "qué es la",
-    # Preguntas educativas/explicativas — Eje1 activa pero son periodismo serio
+    # Preguntas educativas/explicativas — Eje1 activa, pero son periodismo serio
     # Patrón: ¿Por qué X [tiene/es/hace]? con tema geopolítico, científico o institucional
     "por qué argentina", "por qué chile", "por qué españa", "por qué eeuu",
     "por qué el golfo", "por qué la ue", "por qué la onu", "por qué europa",
@@ -463,12 +436,9 @@ def is_hard_news(title: str) -> bool:
         any(ph in t_lower for ph in HARD_NEWS_PHRASES)
     )
 
-# ── Contexto deportivo concreto ──────────────────────────────────────
-# "Increíble gol de Alexis Sánchez ante Perú" es periodismo deportivo,
-# no clickbait: tiene sujeto nombrado + acción + contexto.
-# En contraste, "Increíble lo que hizo este jugador" SÍ es clickbait.
-# Detectamos el contexto concreto con: nombre propio + verbo de resultado.
-
+# Contexto deportivo concreto
+# "Increíble gol de Alexis Sánchez ante Perú" es periodismo deportivo, no clickbait: tiene sujeto nombrado + acción + contexto.
+# En contraste, "Increíble lo que hizo este jugador" SÍ es clickbait. Contexto: nombre propio + verbo de resultado.
 _SPORT_CONCRETE_RE = re.compile(
     # Nombre propio (al menos dos tokens con mayúscula) cerca de verbo deportivo
     r'[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+'  # nombre propio
@@ -486,31 +456,29 @@ _SPORT_SCORE_RE = re.compile(
 
 def is_concrete_sport_news(title: str) -> bool:
     """
-    True si el titular deportivo tiene contexto concreto:
-    nombre propio + verbo de resultado, O marcador numérico.
-    Esto protege 'increíble gol de X' de ser clasificado como CB.
+    True si el titular deportivo tiene contexto concreto: nombre propio + verbo de resultado, O marcador numérico.
+    Esto protege 'increíble gol de X' de ser clasificado como clickbait.
     """
     return bool(_SPORT_CONCRETE_RE.search(title)) or bool(_SPORT_SCORE_RE.search(title))
 
 def apply_labeling_rubric(row: pd.Series) -> str:
     """
-    Rúbrica de etiquetado v3 — incorpora 6 correcciones basadas en
-    análisis empírico del dataset real.
+    Rúbrica de etiquetado: se aplicó pq inicialmente clasificaba mal
 
     Árbol de decisión (en orden de ejecución):
-    ┌─ fake_news base → fake_news (siempre)
-    ├─ R0: Pregunta de brecha (¿?) sin ser servicio → clickbait
-    ├─ R1: Hard news + score < 0.25 → informativo
-    ├─ R1b: Deporte concreto (marcador/nombre+verbo) + score < 0.45 → informativo
-    ├─ R2: Score total >= 0.55 → clickbait
-    ├─ R3: Un eje >= 0.85 → clickbait (con excepciones hard news)
-    ├─ R3b: 'Quién es X' sin dato en el titular → clickbait
-    ├─ R3c: 'viral como tema' con sujeto anónimo/vago → clickbait
-    ├─ R4: Hard news + score < 0.45 → informativo
-    ├─ R5: Score == 0 → informativo
-    ├─ R6: Base=informativo + score 0.25-0.54 + no hard news → posible_clickbait
-    ├─ R7: Base=clickbait + score < 0.25 + hard news → informativo
-    └─ R8: Default → etiqueta_base
+    ─ fake_news base → fake_news (siempre)
+    ─ R0: Pregunta de brecha (¿?) sin ser servicio → clickbait
+    ─ R1: Hard news + score < 0.25 → informativo
+    ─ R1b: Deporte concreto (marcador/nombre+verbo) + score < 0.45 → informativo
+    ─ R2: Score total >= 0.55 → clickbait
+    ─ R3: Un eje >= 0.85 → clickbait (con excepciones hard news)
+    ─ R3b: 'Quién es X' sin dato en el titular → clickbait
+    ─ R3c: 'viral como tema' con sujeto anónimo/vago → clickbait
+    ─ R4: Hard news + score < 0.45 → informativo
+    ─ R5: Score == 0 → informativo
+    ─ R6: Base=informativo + score 0.25-0.54 + no hard news → posible_clickbait
+    ─ R7: Base=clickbait + score < 0.25 + hard news → informativo
+    ─ R8: Default → etiqueta_base
     """
     title   = str(row.get("titulo", ""))
     base    = str(row.get("etiqueta_base", "informativo"))
@@ -641,7 +609,6 @@ def extract_date_from_html(url: str) -> str:
             el = soup.find(tag, attrs)
             if el and el.get("content"):
                 return el["content"].strip()
-        import json
         for script in soup.find_all("script", {"type": "application/ld+json"}):
             try:
                 data = json.loads(script.string or "")
@@ -659,7 +626,7 @@ def extract_date_from_html(url: str) -> str:
         pass
     return ""
 
-def gnews_url(query: str, lang: str = "es-419", country: str = "CL") -> str:
+def gnews_url(query: str, lang: str = "es-419", country: str = "CL") -> str: #google news
     q = requests.utils.quote(query)
     ceid = f"{country}:{lang.split('-')[0]}"
     return f"https://news.google.com/rss/search?q={q}&hl={lang}&gl={country}&ceid={ceid}"
@@ -860,7 +827,6 @@ def load_fakenews(target: int = TARGET_PER_CLASS) -> list[dict]:
         return True
 
     try:
-        from datasets import load_dataset
         log.info("[FakeNews] Cargando mariagrandury/fake_news_corpus_spanish...")
         ds = load_dataset("mariagrandury/fake_news_corpus_spanish")
         for split_name in ds.keys():
@@ -926,7 +892,7 @@ def run_scraping(target: int = TARGET_PER_CLASS, include_fake_news: bool = True)
     all_records += scrape_gnews_queries(INTERNATIONAL_CLICKBAIT_QUERIES, "clickbait", "internacional",
                                          target, lang="es-419", country="US")
     if include_fake_news:
-        print("\n── Fake News ──")
+        print("\n Fake News")
         all_records += load_fakenews(target)
 
     df = pd.DataFrame(all_records)
@@ -953,12 +919,12 @@ def save_dataset(df: pd.DataFrame) -> pd.DataFrame:
 
 def run_tests():
     """
-    Casos de prueba para validar que el sistema detecta correctamente los 4 ejes.
+    Casos de prueba para validar que el sistema detecta correctamente los 4 ejes (clasificados manualmente y de acuerdo a eso se creó la rubrica de arriba).
     python dataset-es.py --test
     """
     test_cases = [
         # (titular, etiqueta_esperada, descripcion)
-        # ── EJE 1: BRECHA ──────────────────────────────────────────
+        # EJE 1: BRECHA
         ("¿Por qué el Presidente decidió renunciar a este cargo inesperado?",
          "clickbait", "Eje1: pregunta sin respuesta + retención de causa"),
         ("Nadie esperaba lo que pasó después del partido de anoche",
@@ -966,7 +932,7 @@ def run_tests():
         ("Descubre cómo este vegetal puede salvar tu vida",
          "clickbait", "Eje1: imperativo + interrogativo indirecto"),
 
-        # ── EJE 2: EXAGERACIÓN ─────────────────────────────────────
+        # EJE 2: EXAGERACIÓN
         ("El gol más increíble de la historia del fútbol chileno se marcó ayer",
          "clickbait", "Eje2: superlativo histórico"),
         ("La decisión de Apple que cambiará tu vida para siempre",
@@ -974,7 +940,7 @@ def run_tests():
         ("¡Atención! Lo que debes saber antes de que sea tarde",
          "clickbait", "Eje2: urgencia artificial + alerta vacía"),
 
-        # ── EJE 3: EMOCIÓN ─────────────────────────────────────────
+        # EJE 3: EMOCIÓN
         ("La actriz lloró en vivo al recordar su pasado y dejó a todos sin palabras",
          "clickbait", "Eje3: reacción emocional + sorpresa colectiva"),
         ("Confesó todo: el futbolista habló por primera vez de su adicción",
@@ -982,7 +948,7 @@ def run_tests():
         ("El alimento que consumes todos los días es mortal y no lo sabías",
          "clickbait", "Eje3: apelación al miedo cotidiano"),
 
-        # ── EJE 4: AMBIGÜEDAD ──────────────────────────────────────
+        # EJE 4: AMBIGÜEDAD
         ("Un famoso cantante sorprendió a todos con su radical cambio de imagen...",
          "clickbait", "Eje4: personaje sin identificar + elipsis"),
         ("La verdad real detrás del escándalo que sacudió al país",
@@ -990,7 +956,7 @@ def run_tests():
         ("Así quedó la conversación entre los dos políticos",
          "clickbait", "Eje4: adverbio de modo sin acción completada"),
 
-        # ── HARD NEWS — NO deben ser clickbait ────────────────────
+        # HARD NEWS — NO deben ser clickbait
         ("Banco Central sube la tasa de interés al 5,5% en reunión de política monetaria",
          "informativo", "Hard news económica sin señales CB"),
         ("Carabineros detiene a imputado por homicidio en La Florida",
@@ -1038,7 +1004,7 @@ def run_tests():
         ("Chile ya está clasificado: ¿Cuándo y dónde se jugará el Mundial Sub 17 de la FIFA 2026?",
          "informativo", "Pregunta de servicio deportivo (cuándo y dónde)"),
 
-        # NUEVOS CASOS DE PRUEBA (Análisis de fallos previos)
+        # EXTRA (análisis de fallos previos)
         ("‘No make up': ¡Las 'celebrities' sin maquillaje que te costará reconocer!",
          "clickbait", "Fallo previo: predicción impacto personal + hipérbole"),
         ("Hicieron un scaneo 3D del Titanic y encontraron un SORPRENDENTE tesoro oculto",
@@ -1076,7 +1042,7 @@ def run_tests():
         ok = (predicted == expected_label) or \
              (expected_label == "clickbait" and predicted in ("clickbait", "posible_clickbait"))
 
-        status = "✅" if ok else "❌"
+        status = "PASS" if ok else "FAIL"
         if ok:
             passed += 1
         else:
@@ -1093,9 +1059,8 @@ def run_tests():
     print(f"  Resultado: {passed}/{len(test_cases)} tests pasados "
           f"({'%.0f' % (passed/len(test_cases)*100)}%)")
 
-
 def quick_eda(df: pd.DataFrame):
-    print("EDA RÁPIDO")
+    print("EDA")
     print(f"\nTotal titulares: {len(df):,}")
     print(f"\nDistribución de clases:\n{df['etiqueta_final'].value_counts().to_string()}")
     print(f"\nOrigen:\n{df['origen'].value_counts().to_string()}")
@@ -1152,15 +1117,12 @@ if __name__ == "__main__":
     parser.add_argument("--explain", type=str, default=None, help="Explicar el score de un titular")
     parser.add_argument("--no-fake", action="store_true", help="Omitir clase fake news")
     args = parser.parse_args()
-
     if args.test:
         run_tests()
         exit(0)
-
     if args.relabel:
         relabel_existing_dataset()
         exit(0)
-
     if args.explain:
         explain_score(args.explain)
         exit(0)
@@ -1177,8 +1139,7 @@ if __name__ == "__main__":
     print(f"\n Scraping completado.")
     print(f"   Raw    → {RAW_CSV}")
     print(f"   Final  → {FINAL_CSV}")
-    print(f"\nColumnas nuevas en v3: cb_brecha, cb_exageracion, cb_emocion, cb_ambiguedad, cb_eje_dominante")
-    print(f"\nUso del modo explicación:")
+    print(f"\nModo explicación:")
     print(f'  python dataset-es.py --explain "Titular a analizar"')
-    print(f"\nUso del modo test:")
+    print(f"\nPara tests:")
     print(f'  python dataset-es.py --test')
